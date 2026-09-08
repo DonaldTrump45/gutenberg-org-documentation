@@ -269,10 +269,19 @@ systemctl enable --now gutenberg-uploader.service
 ## 11. Verifying it's actually working
 
 ```bash
+systemctl start gutenberg-scraper.service
+systemctl stop gutenberg-scraper.service
+systemctl restart gutenberg-scraper.service
 systemctl status gutenberg-scraper.service
-systemctl status gutenberg-uploader.service
 journalctl -u gutenberg-scraper.service -f
+
+
+systemctl start gutenberg-uploader.service
+systemctl stop gutenberg-uploader.service
+systemctl restart gutenberg-uploader.service
+systemctl status gutenberg-uploader.service
 journalctl -u gutenberg-uploader.service -f
+
 watch -n 30 'find /gutenberg-org-documentation/Assets -name "*.epub" | wc -l'
 ```
 
