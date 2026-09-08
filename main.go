@@ -139,6 +139,7 @@ func main() { // program execution starts here
 				log.Printf("index %d: giving up on epub download after %d attempts: %v", pageNumber, maxRetriesPerIndex, downloadErr) // log that we gave up on downloading this one
 			} else if writeErr := os.WriteFile(epubFilePath, epubBytes, 0o644); writeErr != nil { // save the downloaded bytes to disk, and check if writing failed
 				log.Printf("index %d: could not save %s: %v", pageNumber, epubFilePath, writeErr) // log the write failure but keep going
+				break                                                                             // exit the loop since the user asked us to stop
 			} else { // the download and save both succeeded
 				log.Printf("index %d: saved %s (%d bytes)", pageNumber, epubFilePath, len(epubBytes)) // log that the file was saved successfully
 			}
