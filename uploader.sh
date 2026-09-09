@@ -46,7 +46,7 @@ function run_auto_git_sync() { # Define the main function that contains all scri
 	# ---------------- Configuration ----------------
 
 	seconds_between_checks=30           # Wait 30 seconds between each repository check
-	max_seconds_before_forced_push=3600 # Force push at least every 3600 seconds (60 min)
+	max_seconds_before_forced_push=7200 # Force push at least every 7200 seconds (120 min)
 	max_changed_files_before_push=100   # Push early if 100+ files have changed
 	epub_source_folder="Assets/"        # Folder that holds the source .epub files
 	pdf_output_folder="PDFs/"           # Folder that holds the converted .pdf files
