@@ -1,6 +1,7 @@
 package main // this file belongs to the main package, the entry point of the program
 
 import (
+	"bufio"         // bufio lets us read download.txt line by line efficiently
 	"context"       // context lets us cancel in-flight requests when the user hits ctrl+c
 	"fmt"           // fmt lets us format strings like the urls we build
 	"io"            // io lets us read the full response body into memory
@@ -9,6 +10,7 @@ import (
 	"os"            // os lets us access the ctrl+c interrupt signal and read/write files and folders
 	"os/signal"     // os/signal lets us listen for that interrupt signal
 	"path/filepath" // path/filepath lets us build file paths in a way that works on any operating system
+	"strings"       // strings lets us trim whitespace off lines read from download.txt
 	"time"          // time lets us set timeouts, delays, and backoff durations
 )
 
@@ -72,6 +74,49 @@ func downloadEpubFileWithRetries(ctx context.Context, httpClient *http.Client, e
 	return nil, lastErr // all attempts failed, return the last error we saw
 }
 
+// loadDownloadedUrls reads download.txt (if it exists) and returns a set of urls
+// that have already been downloaded, so we know which ones to skip.
+func loadDownloadedUrls(downloadLogPath string) (map[string]bool, error) { // takes the path to the log file and returns a lookup set
+	downloadedUrls := make(map[string]bool) // this set holds every url we have already recorded as downloaded
+
+	file, err := os.Open(downloadLogPath) // try to open the existing log file for reading
+	if err != nil {                       // check if opening failed
+		if os.IsNotExist(err) { // check if it failed simply because the file does not exist yet
+			return downloadedUrls, nil // that is fine, just return the empty set with no error
+		}
+		return nil, err // any other error reading the file should be reported to the caller
+	}
+	defer file.Close() // make sure the file is closed once we are done reading it
+
+	scanner := bufio.NewScanner(file) // a scanner lets us read the file one line at a time
+	for scanner.Scan() {              // keep reading until there are no more lines
+		line := strings.TrimSpace(scanner.Text()) // strip any surrounding whitespace or newline characters from the line
+		if line != "" {                           // skip blank lines
+			downloadedUrls[line] = true // record this url as already downloaded
+		}
+	}
+	if err := scanner.Err(); err != nil { // check if the scanner hit an error while reading
+		return nil, err // report the read error to the caller
+	}
+
+	return downloadedUrls, nil // return the completed set of already-downloaded urls
+}
+
+// appendDownloadedUrl adds a single url as a new line to download.txt, creating the file if needed.
+func appendDownloadedUrl(downloadLogPath string, epubUrl string) error { // takes the log file path and the url to record
+	file, err := os.OpenFile(downloadLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) // open the file for appending, creating it if it does not exist
+	if err != nil {                                                                       // check if opening the file failed
+		return err // report the error to the caller
+	}
+	defer file.Close() // make sure the file is closed once we are done writing to it
+
+	if _, err := file.WriteString(epubUrl + "\n"); err != nil { // write the url followed by a newline so each entry is on its own line
+		return err // report the write error to the caller
+	}
+
+	return nil // everything succeeded, no error to report
+}
+
 func main() { // program execution starts here
 	requestTimeout := 3 * time.Minute // local variable: how long we wait before giving up on a single request
 
@@ -90,12 +135,19 @@ func main() { // program execution starts here
 	assetsDir := "Assets" // local variable: the folder where downloaded epub files are saved
 	pdfDir := "PDFs"      // local variable: the folder where downloaded pdf files are saved
 
+	downloadLogPath := "download.txt" // local variable: the file that keeps a record of every url we have already downloaded
+
 	if err := os.MkdirAll(assetsDir, 0o755); err != nil { // make sure the Assets folder exists before we try to save anything into it
 		log.Fatalf("could not create assets folder %q: %v", assetsDir, err) // if we can't even create the folder, there is no point continuing, so stop the program
 	}
 
 	if err := os.MkdirAll(pdfDir, 0o755); err != nil { // make sure the PDFs folder exists before we try to save anything into it
 		log.Fatalf("could not create pdf folder %q: %v", assetsDir, err) // if we can't even create the folder, there is no point continuing, so stop the program
+	}
+
+	downloadedUrls, err := loadDownloadedUrls(downloadLogPath) // load the set of urls we have already downloaded, from download.txt
+	if err != nil {                                            // check if reading the log file failed
+		log.Fatalf("could not read download log %q: %v", downloadLogPath, err) // if we can't trust the log, there is no point continuing, so stop the program
 	}
 
 	interruptCtx, stopListening := signal.NotifyContext(context.Background(), os.Interrupt) // create a context that cancels itself when ctrl+c is pressed
@@ -123,6 +175,13 @@ func main() { // program execution starts here
 		pdfFileName := fmt.Sprintf("%d.pdf", pageNumber)  // build the filename we will save this ebook's pdf under
 		pdfFilePath := filepath.Join(pdfDir, pdfFileName) // build the full path inside the PDF folder
 
+		epubUrl := fmt.Sprintf("https://www.gutenberg.org/ebooks/%d.epub3.images", pageNumber) // build the same url downloadEpubFile would build, so we can check it against download.txt
+
+		if downloadedUrls[epubUrl] { // check the download.txt log first, before touching the filesystem or the network
+			log.Printf("index %d: %s already recorded in %s, skipping download", pageNumber, epubUrl, downloadLogPath) // let us know we are skipping this one because the log says it is already done
+			continue                                                                                                   // move straight on to the next page number, no delay needed since no request was made
+		}
+
 		if _, statErr := os.Stat(epubFilePath); statErr == nil { // check if a file already exists at that path
 			log.Printf("index %d: %s already exists, skipping download", pageNumber, epubFilePath) // let us know we are skipping this one because it is already saved
 		} else if _, statErr := os.Stat(pdfFilePath); statErr == nil { // check if a file already exists at that path
@@ -142,6 +201,12 @@ func main() { // program execution starts here
 				break                                                                             // exit the loop since the user asked us to stop
 			} else { // the download and save both succeeded
 				log.Printf("index %d: saved %s (%d bytes)", pageNumber, epubFilePath, len(epubBytes)) // log that the file was saved successfully
+
+				if appendErr := appendDownloadedUrl(downloadLogPath, epubUrl); appendErr != nil { // record this url in download.txt so we don't download it again
+					log.Printf("index %d: could not record %s in %s: %v", pageNumber, epubUrl, downloadLogPath, appendErr) // log the failure to record but keep going, the file was still saved
+				} else { // recording the url succeeded
+					downloadedUrls[epubUrl] = true // also remember it in memory so later checks this run stay in sync
+				}
 			}
 		}
 
